@@ -59,7 +59,7 @@ def evaluate(model, dataloader, criterion, device):
     
     return metrics
 
-def train_model(model, train_loader, val_loader, optimizer, criterion, scheduler=None, num_epochs=50, patience=10, device='cpu'):
+def train_model(model, train_loader, val_loader, optimizer, criterion, scheduler=None, num_epochs=50, patience=10, device='cpu', verbose=True):
     history = {
         'train_loss': [],
         'train_acc': [],
@@ -81,7 +81,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, scheduler
         if scheduler is not None:
             scheduler.step(val_metrics['loss'])
         
-        if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
+        if ((epoch + 1) % 5 == 0 or epoch == num_epochs - 1) and verbose:
             print(f"Epoch [{epoch+1}/{num_epochs}] - Train loss: {train_loss:.4f} - Train acc: {train_acc:.4f} - Val loss: {val_metrics['loss']:.4f} - Val acc: {val_metrics['accuracy']:.4f} - Val F1: {val_metrics['f1_score']:.4f} - Val IoU: {val_metrics['iou_score']:.4f}")
         
         history['train_loss'].append(train_loss)
@@ -99,7 +99,8 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, scheduler
             counter += 1
         
         if counter >= patience:
-            print(f"Early stopping triggered after {epoch+1} epochs")
+            if verbose:
+                print(f"Early stopping triggered after {epoch+1} epochs")
             break
     
     # Load best model

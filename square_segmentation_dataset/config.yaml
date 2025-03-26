@@ -1,38 +1,27 @@
-# Dataset configuration
+augmentation:
+  max_blur_kernel: 9
+  min_blur_kernel: 5
+  noise_level: 0.5
+blobs:
+  enabled: true
+  max_alpha: 1.0
+  max_size: 0.25
+  max_stretch: 2.5
+  min_alpha: 0.7
+  min_size: 0.05
+  min_stretch: 1.0
+  num_blobs: 5
 dataset:
-  path: "square_segmentation_dataset"
   image_size: 128
   num_images: 300
-  train_ratio: 0.6
+  path: square_segmentation_dataset
+  train_ratio: 0.7
   val_ratio: 0.15
-
-# Square generation parameters
+random_seed: 42
 square:
-  min_size: 0.2   # As a fraction of image size
-  max_size: 0.6  # As a fraction of image size
-  min_rotation: -45  # Degrees
-  max_rotation: 45   # Degrees
-
-# Random blob parameters
-blobs:
-  enabled: true   # Set to false to disable blobs
-  num_blobs: 5    # Number of random blobs per image
-  min_size: 0.05  # Minimum blob radius as fraction of image size
-  max_size: 0.25  # Maximum blob radius as fraction of image size
-  min_stretch: 1.0  # Minimum stretch factor (1.0 = circle)
-  max_stretch: 2.5  # Maximum stretch factor (higher = more elliptical)
-  min_alpha: 0.7  # Minimum opacity/alpha (0 = transparent)
-  max_alpha: 1.0  # Maximum opacity/alpha (1 = opaque)
-
-# Image augmentation parameters
-augmentation:
-  noise_level: 0.5  # Standard deviation as fraction of 255
-  min_blur_kernel: 5
-  max_blur_kernel: 9
-
-# Visualization
+  max_rotation: 45
+  max_size: 0.6
+  min_rotation: -45
+  min_size: 0.2
 visualization:
   num_examples: 3
-
-# Reproducibility
-random_seed: 42

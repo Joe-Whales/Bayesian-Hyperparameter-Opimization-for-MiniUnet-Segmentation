@@ -67,7 +67,7 @@ def run_trial(
     
     # Initialize scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=False
+        optimizer, mode='min', factor=0.5, patience=5
     )
     
     # Train model
@@ -93,34 +93,23 @@ def run_trial(
 
 def perform_grid_search(
     param_space: Dict[str, List[Any]],
-    train_loader: torch.utils.data.DataLoader,
-    val_loader: torch.utils.data.DataLoader,
-    test_loader: torch.utils.data.DataLoader,
+    train_dataset,
+    val_dataset,
+    test_dataset,
     train_model_fn: Callable,
     get_model_fn: Callable,
     criterion_fn: Callable,
     device: torch.device,
-    metric: str = 'dice_score'
+    metric: str = 'iou_score',
+    num_workers: int = 4
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    Perform grid search over hyperparameter space.
-    
-    Args:
-        param_space: Dictionary of hyperparameter lists to search
-        train_loader: DataLoader for training data
-        val_loader: DataLoader for validation data
-        test_loader: DataLoader for test data
-        train_model_fn: Function to train the model
-        get_model_fn: Function to get model
-        criterion_fn: Function to get loss criterion
-        device: Device to train on
-        metric: Metric to optimize
-        
-    Returns:
-        results_df: DataFrame with all results
-        best_result: Dictionary with best hyperparameters and metrics
+    Perform grid search with batch size as the outermost loop.
     """
-    # Get all combinations of hyperparameters
+    # Extract batch size options and remove from param_space
+    batch_sizes = param_space.pop('batch_size')
+    
+    # Get all combinations of remaining hyperparameters
     param_keys = list(param_space.keys())
     param_values = list(param_space.values())
     param_combinations = list(itertools.product(*param_values))
@@ -129,36 +118,65 @@ def perform_grid_search(
     results = []
     
     # Run trials
-    print(f"Starting grid search with {len(param_combinations)} combinations")
+    total_trials = len(batch_sizes) * len(param_combinations)
+    print(f"Starting grid search with {total_trials} combinations")
     start_time = time.time()
+    trial_counter = 0
     
-    for i, values in enumerate(tqdm(param_combinations, desc="Grid Search Progress")):
-        hyperparameters = dict(zip(param_keys, values))
+    # Outermost loop over batch sizes
+    for batch_size in batch_sizes:
+        # Create data loaders only once per batch size
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, prefetch_factor=2, persistent_workers=True, pin_memory=True)
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, prefetch_factor=2, persistent_workers=True, pin_memory=True)
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
         
-        # Estimate time remaining
-        if i > 0:
-            elapsed = time.time() - start_time
-            avg_time_per_trial = elapsed / i
-            remaining_trials = len(param_combinations) - i
-            estimated_time = avg_time_per_trial * remaining_trials
-            hrs, remainder = divmod(estimated_time, 3600)
-            mins, secs = divmod(remainder, 60)
-            time_str = f"{int(hrs):02d}:{int(mins):02d}:{int(secs):02d}"
-            tqdm.write(f"Trial {i+1}/{len(param_combinations)}, Est. time remaining: {time_str}")
-        
-        # Run trial
-        test_metrics, history = run_trial(
-            hyperparameters,
-            train_loader, val_loader, test_loader,
-            train_model_fn, get_model_fn, criterion_fn, device
-        )
-        
-        # Store results
-        result = {**hyperparameters, **test_metrics, 'best_epoch': len(history['train_loss'])}
-        results.append(result)
+        # Inner loop over all other hyperparameter combinations
+        for values in tqdm(param_combinations, 
+                          desc=f"Grid Search (batch_size={batch_size})", 
+                          leave=False):
+            trial_counter += 1
+            
+            # Build full hyperparameter set
+            hyperparameters = dict(zip(param_keys, values))
+            hyperparameters['batch_size'] = batch_size
+            
+            # Run trial
+            test_metrics, history = run_trial(
+                hyperparameters,
+                train_loader, val_loader, test_loader,
+                train_model_fn, get_model_fn, criterion_fn, device
+            )
+            
+            # Store results
+            result = {**hyperparameters, **test_metrics, 'best_epoch': len(history['train_loss'])}
+            results.append(result)
+    
+    # Put batch_size back into param_space for consistency
+    param_space['batch_size'] = batch_sizes
     
     # Create DataFrame from results
     results_df = pd.DataFrame(results)
+    
+    # Check if the metric exists
+    if metric not in results_df.columns:
+        print(f"Warning: Metric '{metric}' not found. Available metrics: {list(results_df.columns)}")
+        # Use iou_score as fallback
+        if 'iou_score' in results_df.columns:
+            metric = 'iou_score'
+            print(f"Using '{metric}' instead.")
+        else:
+            # Use first available score metric
+            score_metrics = [col for col in results_df.columns if 'score' in col]
+            if score_metrics:
+                metric = score_metrics[0]
+                print(f"Using '{metric}' instead.")
+            else:
+                # Default to 'loss' if no score metric is available
+                metric = 'loss'
+                print(f"Using '{metric}' instead.")
     
     # Get best result based on specified metric
     best_idx = results_df[metric].argmax() if 'score' in metric else results_df[metric].argmin()
@@ -172,39 +190,26 @@ def perform_grid_search(
 
 def perform_bayesian_optimization(
     param_space: Dict[str, Union[Tuple[float, float], List[Any]]],
-    train_loader: torch.utils.data.DataLoader,
-    val_loader: torch.utils.data.DataLoader,
-    test_loader: torch.utils.data.DataLoader,
+    train_dataset,
+    val_dataset,
+    test_dataset,
     train_model_fn: Callable,
     get_model_fn: Callable,
     criterion_fn: Callable,
     device: torch.device,
     n_trials: int = 35,
-    metric: str = 'dice_score',
-    seed: int = 42
+    metric: str = 'iou_score',
+    seed: int = 42,
+    num_workers: int = 4
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    Perform Bayesian hyperparameter optimization.
-    
-    Args:
-        param_space: Dictionary of parameter ranges (tuple) or lists
-        train_loader: DataLoader for training data
-        val_loader: DataLoader for validation data
-        test_loader: DataLoader for test data
-        train_model_fn: Function to train the model
-        get_model_fn: Function to get model
-        criterion_fn: Function to get loss criterion
-        device: Device to train on
-        n_trials: Number of trials to run
-        metric: Metric to optimize
-        seed: Random seed for reproducibility
-        
-    Returns:
-        results_df: DataFrame with all results
-        best_result: Dictionary with best hyperparameters and metrics
+    Perform Bayesian optimization with batch size grouping.
     """
     # Store results
     results = []
+    
+    # Keep track of data loaders for each batch size
+    data_loaders = {}
     
     # Define objective function for Optuna
     def objective(trial):
@@ -226,6 +231,20 @@ def perform_bayesian_optimization(
             else:
                 raise ValueError(f"Invalid parameter space format for {key}: {value}")
         
+        # Get or create data loaders for this batch size
+        batch_size = int(hyperparameters['batch_size'])
+        if batch_size not in data_loaders:
+            data_loaders[batch_size] = (
+                torch.utils.data.DataLoader(
+                    train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, prefetch_factor=2, persistent_workers=True, pin_memory=True),
+                torch.utils.data.DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, prefetch_factor=2, persistent_workers=True, pin_memory=True),
+                torch.utils.data.DataLoader(
+                    test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+            )
+        
+        train_loader, val_loader, test_loader = data_loaders[batch_size]
+        
         # Run trial
         test_metrics, history = run_trial(
             hyperparameters,
@@ -236,6 +255,20 @@ def perform_bayesian_optimization(
         # Store results
         result = {**hyperparameters, **test_metrics, 'best_epoch': len(history['train_loss'])}
         results.append(result)
+        
+        # Check if metric exists
+        if metric not in test_metrics:
+            # Find an appropriate metric
+            if 'iou_score' in test_metrics:
+                return test_metrics['iou_score']
+            else:
+                # Use first available score metric
+                score_metrics = [key for key in test_metrics.keys() if 'score' in key]
+                if score_metrics:
+                    return test_metrics[score_metrics[0]]
+                else:
+                    # Default to negative loss if no score metric is available
+                    return -test_metrics['loss']
         
         # Return metric to optimize
         return test_metrics[metric] if 'score' in metric else -test_metrics[metric]
@@ -260,13 +293,13 @@ def perform_bayesian_optimization(
     print(f"\nBayesian optimization completed in {(time.time() - start_time)/60:.2f} minutes")
     print(f"Best {metric}: {best_result[metric]:.4f}")
     
-    return results_df, best_result
+    return results_df, best_result, study
 
 
 def plot_optimization_comparison(
     grid_results: pd.DataFrame,
     bayesian_results: pd.DataFrame,
-    metric: str = 'dice_score',
+    metric: str = 'iou_score',
     figsize: Tuple[int, int] = (12, 6)
 ) -> None:
     """
@@ -324,7 +357,7 @@ def plot_optimization_comparison(
 
 def plot_hyperparameter_importance(
     bayesian_results: pd.DataFrame, 
-    optimized_metric: str = 'dice_score',
+    optimized_metric: str = 'iou_score',
     figsize: Tuple[int, int] = (12, 8)
 ) -> None:
     """
